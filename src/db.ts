@@ -201,11 +201,10 @@ export async function borrarFactura(id: number): Promise<void> {
   await pedir(`facturas?id=eq.${id}`, { method: "DELETE" });
 }
 
-// Borra todo el contenido de las cuatro tablas (primero las que dependen de otras)
+// Borra todas las facturas con sus líneas y su desglose de IVA.
+// Los proveedores y clientes se conservan (así no se pierden sus NIF).
 export async function vaciarBase(): Promise<void> {
   await pedir("desglose_iva?id=gt.0", { method: "DELETE" });
   await pedir("lineas?id=gt.0", { method: "DELETE" });
   await pedir("facturas?id=gt.0", { method: "DELETE" });
-  await pedir("proveedores?id=gt.0", { method: "DELETE" });
-  await pedir("clientes?id=gt.0", { method: "DELETE" });
 }

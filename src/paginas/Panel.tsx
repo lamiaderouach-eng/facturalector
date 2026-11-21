@@ -37,7 +37,9 @@ export default function Panel() {
     recargar();
   };
   const vaciar = async () => {
-    if (confirm("¿Seguro que quieres borrar todas las facturas?")) {
+    // Es una base compartida: para borrar todo hay que escribir una palabra, no basta con aceptar
+    const palabra = prompt(`Se borrarán las ${facturas.length} facturas de la base compartida. No se puede deshacer.\nPara confirmar escribe BORRAR:`);
+    if (palabra?.trim() === "BORRAR") {
       await vaciarTodo();
       recargar();
     }
@@ -119,7 +121,7 @@ export default function Panel() {
           </div>
           <div className="botones">
             <button className="boton secundario" onClick={ejemplos}>Añadir facturas de ejemplo</button>
-            <button className="boton peligro" onClick={vaciar}>Borrar todo</button>
+            <button className="boton peligro" onClick={vaciar}>Borrar todas las facturas</button>
           </div>
         </>
       )}
