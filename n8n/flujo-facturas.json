@@ -1,0 +1,53 @@
+{
+  "name": "Facturas por correo - Lamia Derouach",
+  "nodes": [
+    {
+      "parameters": { "mailbox": "INBOX", "postProcessAction": "read", "downloadAttachments": true, "options": {} },
+      "name": "1. Correo nuevo (IMAP)",
+      "type": "n8n-nodes-base.emailReadImap",
+      "typeVersion": 2,
+      "position": [0, 0],
+      "notes": "Se conecta al correo y descarga los adjuntos de cada email nuevo."
+    },
+    {
+      "parameters": {
+        "jsCode": "// Solo dejamos pasar los adjuntos PDF (el resto se ignora)\nconst salida = [];\nfor (const item of $input.all()) {\n  const binarios = item.binary || {};\n  for (const [clave, archivo] of Object.entries(binarios)) {\n    if (archivo.mimeType === 'application/pdf' || (archivo.fileName || '').toLowerCase().endsWith('.pdf')) {\n      salida.push({ json: { remitente: item.json.from, archivo: archivo.fileName }, binary: { data: archivo } });\n    }\n  }\n}\nreturn salida;"
+      },
+      "name": "2. Filtrar solo PDF",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [240, 0]
+    },
+    {
+      "parameters": { "operation": "pdf", "options": {} },
+      "name": "3. Sacar texto del PDF",
+      "type": "n8n-nodes-base.extractFromFile",
+      "typeVersion": 1,
+      "position": [480, 0]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Interpreta el texto de la factura con expresiones regulares (misma idea que src/parser.ts)\nconst num = (t) => { if (!t) return 0; t = t.replace(/[€\\s]/g,''); if (t.includes(',')) t = t.replace(/\\./g,'').replace(',', '.'); return parseFloat(t) || 0; };\nconst fecha = (t) => { const m = (t||'').match(/(\\d{1,2})[\\/\\-.](\\d{1,2})[\\/\\-.](\\d{4})/); return m ? `${m[3]}-${m[2].padStart(2,'0')}-${m[1].padStart(2,'0')}` : ''; };\nconst salida = [];\nfor (const item of $input.all()) {\n  const texto = item.json.text;\n  const lineas = texto.split('\\n').map(l => l.trim()).filter(Boolean);\n  const buscar = (re) => { for (const l of lineas) { const m = l.match(re); if (m) return m[1]; } return ''; };\n  const detalle = [];\n  for (const l of lineas) {\n    const m = l.match(/^(.+?)\\s+(\\d+(?:[.,]\\d+)?)\\s+([\\d.,]+)\\s*€?\\s+(?:(\\d+(?:[.,]\\d+)?)\\s*%\\s+)?([\\d.,]+)\\s*€?$/);\n    if (m && !/total|base|iva/i.test(m[1])) detalle.push({ concepto: m[1], cantidad: num(m[2]), precioUnitario: num(m[3]), descuento: num(m[4]), importe: num(m[5]) });\n  }\n  salida.push({ json: {\n    numero: buscar(/n[ºo°]\\s*factura\\s*[:.]?\\s*(\\S+)/i),\n    proveedor: buscar(/^emisor\\s*[:.]\\s*(.+)$/i),\n    proveedorNif: buscar(/NIF\\s*[:.]?\\s*(\\w+)/i),\n    cliente: buscar(/^cliente\\s*[:.]\\s*(.+)$/i),\n    clienteNif: '',\n    fechaEmision: fecha(buscar(/emisi[oó]n\\s*[:.]?\\s*(\\S+)/i)),\n    fechaVencimiento: fecha(buscar(/vencimiento\\s*[:.]?\\s*(\\S+)/i)),\n    baseImponible: num(buscar(/base\\s*imponible\\s*:?\\s*([\\d.,]+)/i)),\n    impuestos: num(buscar(/IVA\\s*\\(?[\\d.,]*%?\\)?\\s*:?\\s*([\\d.,]+)\\s*€/i)),\n    total: num(buscar(/^total\\s*:?\\s*([\\d.,]+)/i)),\n    estado: 'pendiente',\n    archivo: $('2. Filtrar solo PDF').item.json.archivo,\n    remitente: $('2. Filtrar solo PDF').item.json.remitente,\n    fechaRecepcion: new Date().toISOString().slice(0,10),\n    lineas: detalle\n  }});\n}\nreturn salida;"
+      },
+      "name": "4. Interpretar factura",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [720, 0]
+    },
+    {
+      "parameters": { "operation": "toJson", "options": { "fileName": "facturas.json" } },
+      "name": "5. Guardar JSON para la app",
+      "type": "n8n-nodes-base.convertToFile",
+      "typeVersion": 1,
+      "position": [960, 0],
+      "notes": "Este JSON se importa en la app (Subir PDF > Importar desde n8n). Para una base de datos real se puede cambiar por un nodo Postgres usando database/modelo.sql."
+    }
+  ],
+  "connections": {
+    "1. Correo nuevo (IMAP)": { "main": [[{ "node": "2. Filtrar solo PDF", "type": "main", "index": 0 }]] },
+    "2. Filtrar solo PDF": { "main": [[{ "node": "3. Sacar texto del PDF", "type": "main", "index": 0 }]] },
+    "3. Sacar texto del PDF": { "main": [[{ "node": "4. Interpretar factura", "type": "main", "index": 0 }]] },
+    "4. Interpretar factura": { "main": [[{ "node": "5. Guardar JSON para la app", "type": "main", "index": 0 }]] }
+  },
+  "settings": { "executionOrder": "v1" }
+}
