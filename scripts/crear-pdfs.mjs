@@ -24,6 +24,14 @@ const facturas = [
     cliente: "Estudio Derouach", nifC: "12345678Z",
     lineas: [["Servicio de limpieza mensual", 1, 180, 0, 180], ["Productos de limpieza", 3, 12.5, 0, 37.5]],
   },
+  {
+    // Factura con dos tipos de IVA: cada fila indica su tipo en la última columna
+    archivo: "factura-libreria-mixta.pdf",
+    numero: "LM-2026-0031", emision: "21/11/2026", venc: "21/12/2026",
+    emisor: "Librería y Tecnología Mediterráneo", nifE: "B44556677",
+    cliente: "Estudio Derouach", nifC: "12345678Z", mixta: true,
+    lineas: [["Libro de programación", 3, 20, 0, 60, 4], ["Auriculares USB", 2, 15, 0, 30, 21], ["Cuaderno de apuntes", 5, 4, 0, 20, 4]],
+  },
 ];
 
 const fmt = (n) => n.toFixed(2).replace(".", ",");
@@ -52,17 +60,33 @@ for (const f of facturas) {
 
   // Cabecera de la tabla
   texto("Concepto", 50, true); texto("Cantidad", 260, true); texto("Precio", 330, true);
-  texto("Dto.", 400, true); texto("Importe", 470, true); salto();
+  texto("Dto.", 400, true); texto("Importe", 470, true);
+  if (f.mixta) texto("IVA", 535, true);
+  salto();
   let base = 0;
-  for (const [c, q, p, d, imp] of f.lineas) {
+  const porTipo = {};
+  for (const [c, q, p, d, imp, tipoLinea] of f.lineas) {
     texto(c, 50); texto(String(q), 275); texto(`${fmt(p)} €`, 330);
     texto(d ? `${d} %` : "0 %", 400); texto(`${fmt(imp)} €`, 470);
+    if (f.mixta) texto(`${tipoLinea}%`, 535);
+    porTipo[tipoLinea ?? 21] = (porTipo[tipoLinea ?? 21] ?? 0) + imp;
     base += imp; salto();
   }
   salto(15);
-  const iva = Math.round(base * 21) / 100;
+  let iva = 0;
   texto(`Base imponible: ${fmt(base)} €`, 330); salto();
-  texto(`IVA (21%): ${fmt(iva)} €`, 330); salto();
+  if (f.mixta) {
+    // Un renglón de IVA por cada tipo
+    for (const [tipo, b] of Object.entries(porTipo).sort((x, y) => y[0] - x[0])) {
+      const cuota = Math.round(b * tipo) / 100;
+      iva += cuota;
+      texto(`Base imponible ${tipo}%: ${fmt(b)} €`, 330); salto();
+      texto(`IVA ${tipo}%: ${fmt(cuota)} €`, 330); salto();
+    }
+  } else {
+    iva = Math.round(base * 21) / 100;
+    texto(`IVA (21%): ${fmt(iva)} €`, 330); salto();
+  }
   texto(`Total: ${fmt(base + iva)} €`, 330, true, 13);
   writeFileSync(`muestras/${f.archivo}`, await pdf.save());
 }

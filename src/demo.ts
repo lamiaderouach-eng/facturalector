@@ -2,7 +2,7 @@
 // Usa los PDF de /public/muestras y los pasa por el mismo lector real.
 import { guardarFactura, hoy, vaciarBase } from "./db";
 import { procesarPdf } from "./parser";
-import type { Factura } from "./types";
+import { completarImpuestos } from "./impuestos";
 
 const archivos = ["factura-papeleria-central.pdf", "factura-tecnosur.pdf", "factura-limpiezas-aurora.pdf"];
 
@@ -23,7 +23,7 @@ export async function cargarEjemplos(): Promise<number> {
     n++;
   }
   // Dos facturas más antiguas, ya validadas, para que las consultas por semana/mes tengan datos
-  const antiguas: Factura[] = [
+  const antiguas: Parameters<typeof completarImpuestos>[0][] = [
     {
       numero: "EL-2026-0099", proveedor: "Electricidad Levante S.A.", proveedorNif: "A55667788",
       cliente: "Estudio Derouach", clienteNif: "12345678Z", fechaEmision: haceDias(3), fechaVencimiento: haceDias(-27),
@@ -39,7 +39,7 @@ export async function cargarEjemplos(): Promise<number> {
       lineas: [{ concepto: "Silla de oficina", cantidad: 4, precioUnitario: 130, descuento: 0, importe: 520 }],
     },
   ];
-  for (const f of antiguas) { await guardarFactura(f); n++; }
+  for (const f of antiguas) { await guardarFactura(completarImpuestos(f)); n++; }
   return n;
 }
 

@@ -1,9 +1,8 @@
 ﻿// Detalle de una factura: cabecera y líneas editables + validación humana
 import { useEffect, useState } from "react";
 import { obtenerFactura, guardarFactura, borrarFactura } from "../db";
-import type { Factura, Linea } from "../types";
-
-const redondear = (n: number) => Math.round(n * 100) / 100;
+import type { Factura, Impuesto, Linea } from "../types";
+import { calcularDesglose, mismoDesglose, redondear, totalBases, totalCuotas } from "../impuestos";
 
 export default function Detalle({ id }: { id: number }) {
   const [f, setF] = useState<Factura | null>(null);
@@ -23,7 +22,7 @@ export default function Detalle({ id }: { id: number }) {
     const lineas = f.lineas.map((l, j) => {
       if (j !== i) return l;
       const nueva = { ...l, [campo]: campo === "concepto" ? valor : Number(valor) || 0 } as Linea;
-      if (campo !== "concepto" && campo !== "importe") {
+      if (campo !== "concepto" && campo !== "importe" && campo !== "tipoIva") {
         nueva.importe = redondear(nueva.cantidad * nueva.precioUnitario * (1 - nueva.descuento / 100));
       }
       return nueva;
@@ -32,15 +31,33 @@ export default function Detalle({ id }: { id: number }) {
   };
 
   const anadirLinea = () =>
-    setF({ ...f, lineas: [...f.lineas, { concepto: "", cantidad: 1, precioUnitario: 0, descuento: 0, importe: 0 }] });
+    setF({ ...f, lineas: [...f.lineas, { concepto: "", cantidad: 1, precioUnitario: 0, descuento: 0, importe: 0, tipoIva: 21 }] });
   const quitarLinea = (i: number) => setF({ ...f, lineas: f.lineas.filter((_, j) => j !== i) });
 
-  // Recalcula base, IVA (21 %) y total a partir de las líneas
+  // Recalcula el desglose, la base, el IVA y el total a partir de las líneas.
+  // Cada línea usa su propio tipo de IVA, así que se calcula cada tipo por separado.
   const recalcular = () => {
+    const desglose = calcularDesglose(f.lineas);
     const base = redondear(f.lineas.reduce((s, l) => s + l.importe, 0));
-    const iva = redondear(base * 0.21);
-    setF({ ...f, baseImponible: base, impuestos: iva, total: redondear(base + iva) });
+    const iva = totalCuotas(desglose);
+    setF({ ...f, desglose, baseImponible: base, impuestos: iva, total: redondear(base + iva) });
   };
+
+  // Cambia una fila del desglose de impuestos y actualiza los totales de la cabecera
+  const cambiarDesglose = (i: number, campo: keyof Impuesto, valor: string) => {
+    const desglose = f.desglose.map((d, j) => (j === i ? { ...d, [campo]: Number(valor) || 0 } : d));
+    actualizarDesglose(desglose);
+  };
+  const actualizarDesglose = (desglose: Impuesto[]) => {
+    const base = totalBases(desglose);
+    const iva = totalCuotas(desglose);
+    setF({ ...f, desglose, baseImponible: base, impuestos: iva, total: redondear(base + iva) });
+  };
+  const anadirImpuesto = () => actualizarDesglose([...f.desglose, { tipo: 21, base: 0, cuota: 0 }]);
+  const quitarImpuesto = (i: number) => actualizarDesglose(f.desglose.filter((_, j) => j !== i));
+
+  // Aviso si el desglose guardado no coincide con lo que salen de sumar las líneas
+  const hayDiferencia = f.lineas.length > 0 && !mismoDesglose(f.desglose, calcularDesglose(f.lineas));
 
   const guardar = async (estado: Factura["estado"]) => {
     await guardarFactura({ ...f, estado });
@@ -103,6 +120,7 @@ export default function Detalle({ id }: { id: number }) {
                 <th>Cantidad</th>
                 <th>Precio</th>
                 <th>Dto. %</th>
+                <th>IVA %</th>
                 <th>Importe</th>
                 <th><span className="solo-lector">Quitar</span></th>
               </tr>
@@ -122,6 +140,9 @@ export default function Detalle({ id }: { id: number }) {
                   <td data-etiqueta="Dto. %">
                     <input aria-label="Descuento" type="number" value={l.descuento} onChange={(e) => cambiarLinea(i, "descuento", e.target.value)} />
                   </td>
+                  <td data-etiqueta="IVA %">
+                    <input aria-label="Tipo de IVA" type="number" step="0.5" value={l.tipoIva} onChange={(e) => cambiarLinea(i, "tipoIva", e.target.value)} />
+                  </td>
                   <td data-etiqueta="Importe">
                     <input aria-label="Importe" type="number" step="0.01" value={l.importe} onChange={(e) => cambiarLinea(i, "importe", e.target.value)} />
                   </td>
@@ -136,6 +157,49 @@ export default function Detalle({ id }: { id: number }) {
         <div className="botones">
           <button className="boton secundario" onClick={anadirLinea}>+ Añadir línea</button>
           <button className="boton secundario" onClick={recalcular}>Recalcular totales</button>
+        </div>
+      </div>
+
+      <div className="caja">
+        <h2>Desglose de impuestos</h2>
+        <p className="ayuda">Cada tipo de IVA va por separado. Los tipos que lee el programa de la factura se conservan.</p>
+        <div className="tabla-scroll">
+          <table className="lineas">
+            <thead>
+              <tr>
+                <th>Tipo de IVA %</th>
+                <th>Base (€)</th>
+                <th>Cuota (€)</th>
+                <th><span className="solo-lector">Quitar</span></th>
+              </tr>
+            </thead>
+            <tbody>
+              {f.desglose.map((d, i) => (
+                <tr key={i}>
+                  <td data-etiqueta="Tipo %">
+                    <input aria-label="Tipo de IVA" type="number" step="0.5" value={d.tipo} onChange={(e) => cambiarDesglose(i, "tipo", e.target.value)} />
+                  </td>
+                  <td data-etiqueta="Base">
+                    <input aria-label="Base del tipo" type="number" step="0.01" value={d.base} onChange={(e) => cambiarDesglose(i, "base", e.target.value)} />
+                  </td>
+                  <td data-etiqueta="Cuota">
+                    <input aria-label="Cuota del tipo" type="number" step="0.01" value={d.cuota} onChange={(e) => cambiarDesglose(i, "cuota", e.target.value)} />
+                  </td>
+                  <td>
+                    <button className="boton peligro pequeno" onClick={() => quitarImpuesto(i)} aria-label="Quitar impuesto">✕</button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        {hayDiferencia && (
+          <p className="ayuda">
+            Ojo: el desglose no coincide con el IVA de cada línea. Revisa la columna "IVA %" y pulsa "Recalcular totales" si quieres que se calcule con las líneas.
+          </p>
+        )}
+        <div className="botones">
+          <button className="boton secundario" onClick={anadirImpuesto}>+ Añadir tipo de IVA</button>
         </div>
       </div>
 

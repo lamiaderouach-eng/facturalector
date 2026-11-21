@@ -2,7 +2,8 @@
 // Tablas normalizadas: proveedores, clientes, facturas y lineas.
 // Se usa la API REST de Supabase con fetch, sin librerías extra.
 import { SUPABASE_URL, SUPABASE_CLAVE } from "./config";
-import type { Factura, Linea } from "./types";
+import type { Factura, Impuesto, Linea } from "./types";
+import { desgloseDeTotales } from "./impuestos";
 
 const BASE = `${SUPABASE_URL}/rest/v1`;
 
@@ -79,6 +80,7 @@ export async function guardarFactura(f: Factura): Promise<number> {
     id = f.id;
     await pedir(`facturas?id=eq.${id}`, { method: "PATCH", body: JSON.stringify(fila) });
     await pedir(`lineas?factura_id=eq.${id}`, { method: "DELETE" });
+    await pedir(`desglose_iva?factura_id=eq.${id}`, { method: "DELETE" });
   } else {
     const nueva = await pedir<{ id: number }[]>("facturas", {
       method: "POST",
@@ -98,8 +100,16 @@ export async function guardarFactura(f: Factura): Promise<number> {
           precio_unitario: l.precioUnitario,
           descuento: l.descuento,
           importe: l.importe,
+          tipo_iva: l.tipoIva,
         })),
       ),
+    });
+  }
+  // Desglose de impuestos: una fila por cada tipo de IVA
+  if (f.desglose.length > 0) {
+    await pedir("desglose_iva", {
+      method: "POST",
+      body: JSON.stringify(f.desglose.map((d) => ({ factura_id: id, tipo: d.tipo, base: d.base, cuota: d.cuota }))),
     });
   }
   return id;
@@ -128,7 +138,9 @@ interface FilaNube {
     precio_unitario: number;
     descuento: number;
     importe: number;
+    tipo_iva: number;
   }[];
+  desglose_iva: { id: number; tipo: number; base: number; cuota: number }[];
 }
 
 // Pasa una fila de la nube al formato que usa la interfaz
@@ -143,7 +155,13 @@ function aFactura(r: FilaNube): Factura {
       precioUnitario: Number(l.precio_unitario),
       descuento: Number(l.descuento),
       importe: Number(l.importe),
+      tipoIva: Number(l.tipo_iva ?? 21),
     }));
+  let desglose: Impuesto[] = [...(r.desglose_iva ?? [])]
+    .sort((a, b) => Number(b.tipo) - Number(a.tipo))
+    .map((d) => ({ id: d.id, tipo: Number(d.tipo), base: Number(d.base), cuota: Number(d.cuota) }));
+  // Facturas antiguas sin desglose: lo deducimos de la base y los impuestos
+  if (desglose.length === 0) desglose = desgloseDeTotales(Number(r.base_imponible), Number(r.impuestos));
   return {
     id: r.id,
     numero: r.numero,
@@ -161,11 +179,12 @@ function aFactura(r: FilaNube): Factura {
     remitente: r.remitente ?? "",
     fechaRecepcion: r.fecha_recepcion,
     lineas,
+    desglose,
   };
 }
 
-// Una sola petición trae la factura con su proveedor, cliente y líneas
-const UNIR = "select=*,proveedores(nombre,nif),clientes(nombre,nif),lineas(*)";
+// Una sola petición trae la factura con su proveedor, cliente, líneas y desglose de IVA
+const UNIR = "select=*,proveedores(nombre,nif),clientes(nombre,nif),lineas(*),desglose_iva(*)";
 
 export async function listarFacturas(): Promise<Factura[]> {
   const filas = await pedir<FilaNube[]>(`facturas?${UNIR}&order=fecha_recepcion.desc,id.desc`);
@@ -184,6 +203,7 @@ export async function borrarFactura(id: number): Promise<void> {
 
 // Borra todo el contenido de las cuatro tablas (primero las que dependen de otras)
 export async function vaciarBase(): Promise<void> {
+  await pedir("desglose_iva?id=gt.0", { method: "DELETE" });
   await pedir("lineas?id=gt.0", { method: "DELETE" });
   await pedir("facturas?id=gt.0", { method: "DELETE" });
   await pedir("proveedores?id=gt.0", { method: "DELETE" });

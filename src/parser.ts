@@ -1,8 +1,9 @@
-﻿// Lectura e interpretación de facturas en PDF.
+// Lectura e interpretación de facturas en PDF.
 // Paso 1: sacar el texto del PDF con pdf.js. Paso 2: buscar los datos con expresiones regulares.
 import workerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
-import type { Factura, Linea } from "./types";
+import type { Factura, Impuesto, Linea } from "./types";
 import { hoy } from "./db";
+import { desgloseDeTotales, redondear } from "./impuestos";
 
 // ---------- 1. Sacar las líneas de texto del PDF ----------
 export async function leerLineasPdf(datos: ArrayBuffer): Promise<string[]> {
@@ -121,9 +122,9 @@ export function interpretarFactura(lineasTexto: string[], archivo: string, remit
     for (let i = inicio + 1; i < lineasTexto.length; i++) {
       const l = lineasTexto[i];
       if (/^(subtotal|base imponible|total|iva)/i.test(l)) break;
-      // concepto  cantidad  precio  [descuento%]  importe
+      // concepto  cantidad  precio  [descuento%]  importe  [IVA%]
       const m = l.match(
-        /^(.+?)\s+(\d+(?:[.,]\d+)?)\s+([\d.,]+)\s*€?\s+(?:(\d+(?:[.,]\d+)?)\s*%\s+)?([\d.,]+)\s*€?$/,
+        /^(.+?)\s+(\d+(?:[.,]\d+)?)\s+([\d.,]+)\s*€?\s+(?:(\d+(?:[.,]\d+)?)\s*%\s+)?([\d.,]+)\s*€?(?:\s+(\d+(?:[.,]\d+)?)\s*%)?$/,
       );
       if (m) {
         lineas.push({
@@ -132,23 +133,36 @@ export function interpretarFactura(lineasTexto: string[], archivo: string, remit
           precioUnitario: aNumero(m[3]),
           descuento: aNumero(m[4]),
           importe: aNumero(m[5]),
+          // si la fila trae su IVA lo guardamos; si no, se rellena más abajo
+          tipoIva: m[6] !== undefined ? aNumero(m[6]) : -1,
         });
       }
     }
   }
 
   // Importes
-  let baseImponible = aNumero(buscar(lineasTexto, /base\s*imponible\s*:?\s*([\d.,]+)/i));
-  const impuestos = aNumero(
-    buscar(lineasTexto, /(?:iva|igic|impuestos?)\s*(?:\(?\s*\d+(?:[.,]\d+)?\s*%\s*\)?)?\s*:?\s*([\d.,]+)/i),
-  );
+  let baseImponible = aNumero(buscar(lineasTexto, /^base\s*imponible\s*:?\s*([\d.,]+)\s*€?$/i));
+
+  // Impuestos: una factura puede tener varios tipos de IVA, así que se leen todos por separado
+  const desglose = leerDesglose(lineasTexto);
+  const impuestos = desglose.length
+    ? redondear(desglose.reduce((s, i) => s + i.cuota, 0))
+    : aNumero(buscar(lineasTexto, /(?:iva|igic|impuestos?)\s*(?:\(?\s*\d+(?:[.,]\d+)?\s*%\s*\)?)?\s*:?\s*([\d.,]+)/i));
   const lineasTotal = lineasTexto.filter((l) => /^total\b/i.test(l));
   let total = aNumero(lineasTotal.length ? lineasTotal[lineasTotal.length - 1].match(/([\d.,]+)\s*€?$/)?.[1] : "");
 
   // Si falta algo lo calculamos con lo que sí tenemos
-  if (!baseImponible && lineas.length) baseImponible = Math.round(lineas.reduce((s, l) => s + l.importe, 0) * 100) / 100;
-  if (!total && baseImponible) total = Math.round((baseImponible + impuestos) * 100) / 100;
+  if (!baseImponible && desglose.length) baseImponible = redondear(desglose.reduce((s, i) => s + i.base, 0));
+  if (!baseImponible && lineas.length) baseImponible = redondear(lineas.reduce((s, l) => s + l.importe, 0));
+  if (!total && baseImponible) total = redondear(baseImponible + impuestos);
+  // Con un solo tipo de IVA, la base de ese tipo es la base imponible de la factura
+  if (desglose.length === 1 && baseImponible > 0) desglose[0].base = baseImponible;
+  // Si no había desglose pero sí base e impuestos, lo deducimos
+  if (!desglose.length) desglose.push(...desgloseDeTotales(baseImponible, impuestos));
 
+  // Las líneas sin IVA propio usan el tipo de la factura (si hay varios, el del tipo con más base)
+  const tipoPorDefecto = [...desglose].sort((a, b) => b.base - a.base)[0]?.tipo ?? 21;
+  for (const l of lineas) if (l.tipoIva < 0) l.tipoIva = tipoPorDefecto;
   return {
     numero,
     proveedor,
@@ -165,7 +179,36 @@ export function interpretarFactura(lineasTexto: string[], archivo: string, remit
     remitente,
     fechaRecepcion: hoy(),
     lineas,
+    desglose,
   };
+}
+
+// Lee el IVA separado por tipos. Entiende líneas como:
+//   "IVA (21%): 12,34 €"   "IVA 10% sobre 100,00 €: 10,00 €"   "Base imponible 21%: 58,80 €"
+function leerDesglose(lineasTexto: string[]): Impuesto[] {
+  const basesPorTipo = new Map<number, number>();
+  for (const l of lineasTexto) {
+    const m = l.match(/^base\s*imponible\s*\(?\s*(\d+(?:[.,]\d+)?)\s*%\s*\)?\s*:?\s*([\d.,]+)/i);
+    if (m) basesPorTipo.set(aNumero(m[1]), aNumero(m[2]));
+  }
+  const resultado: Impuesto[] = [];
+  for (const l of lineasTexto) {
+    const m = l.match(
+      /^(?:iva|igic|impuestos?)\s*\(?\s*(\d+(?:[.,]\d+)?)\s*%\s*\)?\s*(?:sobre\s*([\d.,]+)\s*€?)?\s*:?\s*([\d.,]+)\s*€?$/i,
+    );
+    if (!m) continue;
+    const tipo = aNumero(m[1]);
+    const cuota = aNumero(m[3]);
+    // La base sale de la línea "Base imponible X%", de "sobre N" o se calcula con la cuota
+    const base = basesPorTipo.get(tipo) ?? (m[2] ? aNumero(m[2]) : tipo > 0 ? redondear((cuota * 100) / tipo) : 0);
+    // Si el mismo tipo sale dos veces, se suman
+    const existente = resultado.find((r) => r.tipo === tipo);
+    if (existente) {
+      existente.base = redondear(existente.base + base);
+      existente.cuota = redondear(existente.cuota + cuota);
+    } else resultado.push({ tipo, base, cuota });
+  }
+  return resultado.sort((a, b) => b.tipo - a.tipo);
 }
 
 // Función que usa la interfaz: recibe el archivo y devuelve la factura interpretada

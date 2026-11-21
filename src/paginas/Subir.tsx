@@ -1,7 +1,8 @@
 ﻿// Página para subir facturas. Solo se aceptan PDF (igual que pide el enunciado).
 import { useState } from "react";
 import { procesarPdf } from "../parser";
-import { guardarFactura } from "../db";
+import { guardarFactura, listarFacturas } from "../db";
+import { completarImpuestos } from "../impuestos";
 import type { Factura } from "../types";
 
 export default function Subir() {
@@ -38,8 +39,15 @@ export default function Subir() {
     try {
       const datos = JSON.parse(await archivo.text());
       const lista: Factura[] = Array.isArray(datos) ? datos : [datos];
-      for (const f of lista) await guardarFactura({ ...f, id: undefined, estado: "pendiente" });
-      setMensajes([`✓ Se han importado ${lista.length} factura(s) desde n8n.`]);
+      // Si ya existe una factura con el mismo número y proveedor, no se vuelve a guardar
+      const existentes = await listarFacturas();
+      let nuevas = 0;
+      for (const f of lista) {
+        if (existentes.some((e) => e.numero === f.numero && e.proveedor === f.proveedor)) continue;
+        await guardarFactura(completarImpuestos({ ...f, id: undefined, estado: "pendiente" }));
+        nuevas++;
+      }
+      setMensajes([`✓ Se han importado ${nuevas} factura(s) nueva(s) (${lista.length - nuevas} ya estaban).`]);
     } catch {
       setMensajes(["✗ El archivo JSON no tiene el formato esperado."]);
     }

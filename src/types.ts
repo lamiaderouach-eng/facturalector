@@ -17,6 +17,15 @@ export interface Linea {
   precioUnitario: number;
   descuento: number; // porcentaje
   importe: number;
+  tipoIva: number; // % de IVA de esta línea (21, 10, 4, 0...)
+}
+
+// Desglose de impuestos: una fila por cada tipo de IVA de la factura
+export interface Impuesto {
+  id?: number;
+  tipo: number; // porcentaje
+  base: number; // base sobre la que se aplica
+  cuota: number; // importe del impuesto
 }
 
 // Fila de la tabla facturas (solo guarda los ids de proveedor y cliente)
@@ -54,4 +63,5 @@ export interface Factura {
   remitente: string;
   fechaRecepcion: string;
   lineas: Linea[];
+  desglose: Impuesto[]; // impuestos separados por tipo
 }

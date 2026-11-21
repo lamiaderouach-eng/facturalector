@@ -2,11 +2,19 @@
   "name": "Facturas por correo - Lamia Derouach",
   "nodes": [
     {
-      "parameters": { "mailbox": "INBOX", "postProcessAction": "read", "downloadAttachments": true, "options": {} },
+      "parameters": {
+        "mailbox": "INBOX",
+        "postProcessAction": "read",
+        "downloadAttachments": true,
+        "options": {}
+      },
       "name": "1. Correo nuevo (IMAP)",
       "type": "n8n-nodes-base.emailReadImap",
       "typeVersion": 2,
-      "position": [0, 0],
+      "position": [
+        0,
+        0
+      ],
       "notes": "Se conecta al correo y descarga los adjuntos de cada email nuevo."
     },
     {
@@ -16,38 +24,119 @@
       "name": "2. Filtrar solo PDF",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [240, 0]
-    },
-    {
-      "parameters": { "operation": "pdf", "options": {} },
-      "name": "3. Sacar texto del PDF",
-      "type": "n8n-nodes-base.extractFromFile",
-      "typeVersion": 1,
-      "position": [480, 0]
+      "position": [
+        240,
+        0
+      ]
     },
     {
       "parameters": {
-        "jsCode": "// Interpreta el texto de la factura con expresiones regulares (misma idea que src/parser.ts)\nconst num = (t) => { if (!t) return 0; t = t.replace(/[€\\s]/g,''); if (t.includes(',')) t = t.replace(/\\./g,'').replace(',', '.'); return parseFloat(t) || 0; };\nconst fecha = (t) => { const m = (t||'').match(/(\\d{1,2})[\\/\\-.](\\d{1,2})[\\/\\-.](\\d{4})/); return m ? `${m[3]}-${m[2].padStart(2,'0')}-${m[1].padStart(2,'0')}` : ''; };\nconst salida = [];\nfor (const item of $input.all()) {\n  const texto = item.json.text;\n  const lineas = texto.split('\\n').map(l => l.trim()).filter(Boolean);\n  const buscar = (re) => { for (const l of lineas) { const m = l.match(re); if (m) return m[1]; } return ''; };\n  const detalle = [];\n  for (const l of lineas) {\n    const m = l.match(/^(.+?)\\s+(\\d+(?:[.,]\\d+)?)\\s+([\\d.,]+)\\s*€?\\s+(?:(\\d+(?:[.,]\\d+)?)\\s*%\\s+)?([\\d.,]+)\\s*€?$/);\n    if (m && !/total|base|iva/i.test(m[1])) detalle.push({ concepto: m[1], cantidad: num(m[2]), precioUnitario: num(m[3]), descuento: num(m[4]), importe: num(m[5]) });\n  }\n  salida.push({ json: {\n    numero: buscar(/n[ºo°]\\s*factura\\s*[:.]?\\s*(\\S+)/i),\n    proveedor: buscar(/^emisor\\s*[:.]\\s*(.+)$/i),\n    proveedorNif: buscar(/NIF\\s*[:.]?\\s*(\\w+)/i),\n    cliente: buscar(/^cliente\\s*[:.]\\s*(.+)$/i),\n    clienteNif: '',\n    fechaEmision: fecha(buscar(/emisi[oó]n\\s*[:.]?\\s*(\\S+)/i)),\n    fechaVencimiento: fecha(buscar(/vencimiento\\s*[:.]?\\s*(\\S+)/i)),\n    baseImponible: num(buscar(/base\\s*imponible\\s*:?\\s*([\\d.,]+)/i)),\n    impuestos: num(buscar(/IVA\\s*\\(?[\\d.,]*%?\\)?\\s*:?\\s*([\\d.,]+)\\s*€/i)),\n    total: num(buscar(/^total\\s*:?\\s*([\\d.,]+)/i)),\n    estado: 'pendiente',\n    archivo: $('2. Filtrar solo PDF').item.json.archivo,\n    remitente: $('2. Filtrar solo PDF').item.json.remitente,\n    fechaRecepcion: new Date().toISOString().slice(0,10),\n    lineas: detalle\n  }});\n}\nreturn salida;"
+        "operation": "pdf",
+        "options": {}
+      },
+      "name": "3. Sacar texto del PDF",
+      "type": "n8n-nodes-base.extractFromFile",
+      "typeVersion": 1,
+      "position": [
+        480,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Interpreta el texto de la factura con expresiones regulares (misma idea que src/parser.ts)\n// Lamia Derouach\nconst num = (t) => { if (!t) return 0; t = t.replace(/[€\\s]/g, ''); if (t.includes(',')) t = t.replace(/\\./g, '').replace(',', '.'); return parseFloat(t) || 0; };\nconst redondear = (n) => Math.round(n * 100) / 100;\nconst fecha = (t) => { const m = (t || '').match(/(\\d{1,2})[\\/\\-.](\\d{1,2})[\\/\\-.](\\d{4})/); return m ? m[3] + '-' + m[2].padStart(2, '0') + '-' + m[1].padStart(2, '0') : ''; };\nconst salida = [];\nfor (const item of $input.all()) {\n  const texto = item.json.text;\n  const lineas = texto.split('\\n').map((l) => l.trim()).filter(Boolean);\n  const buscar = (re) => { for (const l of lineas) { const m = l.match(re); if (m) return m[1]; } return ''; };\n\n  // Líneas de detalle: concepto cantidad precio [dto%] importe [IVA%]\n  const detalle = [];\n  for (const l of lineas) {\n    const m = l.match(/^(.+?)\\s+(\\d+(?:[.,]\\d+)?)\\s+([\\d.,]+)\\s*€?\\s+(?:(\\d+(?:[.,]\\d+)?)\\s*%\\s+)?([\\d.,]+)\\s*€?(?:\\s+(\\d+(?:[.,]\\d+)?)\\s*%)?$/);\n    if (m && !/total|base|iva/i.test(m[1])) detalle.push({ concepto: m[1], cantidad: num(m[2]), precioUnitario: num(m[3]), descuento: num(m[4]), importe: num(m[5]), tipoIva: m[6] !== undefined ? num(m[6]) : -1 });\n  }\n\n  // Impuestos: cada tipo de IVA por separado (no se supone siempre el 21 %)\n  const bases = {};\n  for (const l of lineas) {\n    const m = l.match(/^base\\s*imponible\\s*\\(?\\s*(\\d+(?:[.,]\\d+)?)\\s*%\\s*\\)?\\s*:?\\s*([\\d.,]+)/i);\n    if (m) bases[num(m[1])] = num(m[2]);\n  }\n  const desglose = [];\n  for (const l of lineas) {\n    const m = l.match(/^(?:iva|igic|impuestos?)\\s*\\(?\\s*(\\d+(?:[.,]\\d+)?)\\s*%\\s*\\)?\\s*(?:sobre\\s*([\\d.,]+)\\s*€?)?\\s*:?\\s*([\\d.,]+)\\s*€?$/i);\n    if (!m) continue;\n    const tipo = num(m[1]);\n    const cuota = num(m[3]);\n    const base = bases[tipo] !== undefined ? bases[tipo] : (m[2] ? num(m[2]) : (tipo > 0 ? redondear(cuota * 100 / tipo) : 0));\n    const ya = desglose.find((d) => d.tipo === tipo);\n    if (ya) { ya.base = redondear(ya.base + base); ya.cuota = redondear(ya.cuota + cuota); } else desglose.push({ tipo, base, cuota });\n  }\n  desglose.sort((a, b) => b.tipo - a.tipo);\n\n  let baseImponible = num(buscar(/^base\\s*imponible\\s*:?\\s*([\\d.,]+)\\s*€?$/i));\n  let impuestos = desglose.length ? redondear(desglose.reduce((s, d) => s + d.cuota, 0)) : num(buscar(/IVA\\s*\\(?[\\d.,]*%?\\)?\\s*:?\\s*([\\d.,]+)\\s*€/i));\n  if (!baseImponible && desglose.length) baseImponible = redondear(desglose.reduce((s, d) => s + d.base, 0));\n  if (!baseImponible && detalle.length) baseImponible = redondear(detalle.reduce((s, l) => s + l.importe, 0));\n  // Con un solo tipo de IVA, la base es la base imponible de la factura\n  if (desglose.length === 1 && baseImponible > 0) desglose[0].base = baseImponible;\n  // Si no había desglose pero sí base e impuestos, se deduce el tipo (al medio punto más cercano)\n  if (!desglose.length && (baseImponible > 0 || impuestos > 0)) {\n    desglose.push({ tipo: baseImponible > 0 ? Math.round(impuestos / baseImponible * 200) / 2 : 0, base: baseImponible, cuota: impuestos });\n  }\n  // Las líneas sin IVA propio usan el tipo con más base\n  const porDefecto = desglose.length ? [...desglose].sort((a, b) => b.base - a.base)[0].tipo : 21;\n  for (const l of detalle) if (l.tipoIva < 0) l.tipoIva = porDefecto;\n\n  salida.push({ json: {\n    numero: buscar(/n[ºo°]\\s*factura\\s*[:.]?\\s*(\\S+)/i),\n    proveedor: buscar(/^emisor\\s*[:.]\\s*(.+)$/i),\n    proveedorNif: buscar(/NIF\\s*[:.]?\\s*(\\w+)/i),\n    cliente: buscar(/^cliente\\s*[:.]\\s*(.+)$/i),\n    clienteNif: '',\n    fechaEmision: fecha(buscar(/emisi[oó]n\\s*[:.]?\\s*(\\S+)/i)),\n    fechaVencimiento: fecha(buscar(/vencimiento\\s*[:.]?\\s*(\\S+)/i)),\n    baseImponible,\n    impuestos,\n    total: num(buscar(/^total\\s*:?\\s*([\\d.,]+)/i)),\n    estado: 'pendiente',\n    archivo: $('2. Filtrar solo PDF').item.json.archivo,\n    remitente: $('2. Filtrar solo PDF').item.json.remitente,\n    fechaRecepcion: new Date().toISOString().slice(0, 10),\n    lineas: detalle,\n    desglose\n  }});\n}\nreturn salida;"
       },
       "name": "4. Interpretar factura",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [720, 0]
+      "position": [
+        720,
+        0
+      ]
     },
     {
-      "parameters": { "operation": "toJson", "options": { "fileName": "facturas.json" } },
-      "name": "5. Guardar JSON para la app",
-      "type": "n8n-nodes-base.convertToFile",
-      "typeVersion": 1,
-      "position": [960, 0],
-      "notes": "Este JSON se importa en la app (Subir PDF > Importar desde n8n). Para una base de datos real se puede cambiar por un nodo Postgres usando database/modelo.sql."
+      "parameters": {
+        "method": "POST",
+        "url": "https://oencloetrrgzmteiwfym.supabase.co/rest/v1/rpc/insertar_factura",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "apikey",
+              "value": "sb_publishable_8c1EIyk0Xvlu9Eeo3833oA_TjSpSRh3"
+            },
+            {
+              "name": "Authorization",
+              "value": "Bearer sb_publishable_8c1EIyk0Xvlu9Eeo3833oA_TjSpSRh3"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ datos: $json }) }}",
+        "options": {}
+      },
+      "name": "5. Guardar en Supabase",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        960,
+        0
+      ],
+      "notes": "Llama a la función insertar_factura de Supabase (database/supabase.sql). Guarda proveedor, cliente, factura, líneas y desglose de IVA de una vez y no repite facturas con el mismo número y proveedor."
     }
   ],
   "connections": {
-    "1. Correo nuevo (IMAP)": { "main": [[{ "node": "2. Filtrar solo PDF", "type": "main", "index": 0 }]] },
-    "2. Filtrar solo PDF": { "main": [[{ "node": "3. Sacar texto del PDF", "type": "main", "index": 0 }]] },
-    "3. Sacar texto del PDF": { "main": [[{ "node": "4. Interpretar factura", "type": "main", "index": 0 }]] },
-    "4. Interpretar factura": { "main": [[{ "node": "5. Guardar JSON para la app", "type": "main", "index": 0 }]] }
+    "1. Correo nuevo (IMAP)": {
+      "main": [
+        [
+          {
+            "node": "2. Filtrar solo PDF",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "2. Filtrar solo PDF": {
+      "main": [
+        [
+          {
+            "node": "3. Sacar texto del PDF",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "3. Sacar texto del PDF": {
+      "main": [
+        [
+          {
+            "node": "4. Interpretar factura",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "4. Interpretar factura": {
+      "main": [
+        [
+          {
+            "node": "5. Guardar en Supabase",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
   },
-  "settings": { "executionOrder": "v1" }
+  "settings": {
+    "executionOrder": "v1"
+  }
 }

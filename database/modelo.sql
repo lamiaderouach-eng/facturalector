@@ -1,5 +1,6 @@
 -- Modelo de base de datos (PostgreSQL) - Lamia Derouach
--- Es el mismo modelo que usa la app en el navegador (IndexedDB).
+-- Es el modelo que usa la app en Supabase (database/supabase.sql tiene esta estructura
+-- con los permisos y la función que usa n8n).
 
 CREATE TABLE proveedores (
   id     SERIAL PRIMARY KEY,
@@ -37,9 +38,20 @@ CREATE TABLE lineas (
   cantidad        NUMERIC(12,2) NOT NULL DEFAULT 1,
   precio_unitario NUMERIC(12,2) NOT NULL DEFAULT 0,
   descuento       NUMERIC(5,2)  NOT NULL DEFAULT 0,
-  importe         NUMERIC(12,2) NOT NULL DEFAULT 0
+  importe         NUMERIC(12,2) NOT NULL DEFAULT 0,
+  tipo_iva        NUMERIC(5,2)  NOT NULL DEFAULT 21  -- IVA de esta línea
+);
+
+-- Un tipo de IVA por fila: una factura puede tener varios (21 %, 10 %, 4 %...)
+CREATE TABLE desglose_iva (
+  id         SERIAL PRIMARY KEY,
+  factura_id INTEGER NOT NULL REFERENCES facturas(id) ON DELETE CASCADE,
+  tipo       NUMERIC(5,2)  NOT NULL,
+  base       NUMERIC(12,2) NOT NULL DEFAULT 0,
+  cuota      NUMERIC(12,2) NOT NULL DEFAULT 0
 );
 
 CREATE INDEX idx_facturas_recepcion ON facturas(fecha_recepcion);
 CREATE INDEX idx_facturas_estado ON facturas(estado);
 CREATE INDEX idx_lineas_factura ON lineas(factura_id);
+CREATE INDEX idx_desglose_factura ON desglose_iva(factura_id);
