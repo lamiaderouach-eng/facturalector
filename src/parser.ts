@@ -1,14 +1,14 @@
 ﻿// Lectura e interpretación de facturas en PDF.
 // Paso 1: sacar el texto del PDF con pdf.js. Paso 2: buscar los datos con expresiones regulares.
-import * as pdfjs from "pdfjs-dist";
 import workerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
 import type { Factura, Linea } from "./types";
 import { hoy } from "./db";
 
-pdfjs.GlobalWorkerOptions.workerSrc = workerUrl;
-
 // ---------- 1. Sacar las líneas de texto del PDF ----------
 export async function leerLineasPdf(datos: ArrayBuffer): Promise<string[]> {
+  // pdf.js se carga solo cuando se necesita, así la app abre aunque el móvil sea antiguo
+  const pdfjs = await import("pdfjs-dist");
+  pdfjs.GlobalWorkerOptions.workerSrc = workerUrl;
   const pdf = await pdfjs.getDocument({ data: datos }).promise;
   const resultado: string[] = [];
   for (let p = 1; p <= pdf.numPages; p++) {
