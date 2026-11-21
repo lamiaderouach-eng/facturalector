@@ -58,7 +58,7 @@ function leerImporte(p: string): number | null {
 export async function responder(pregunta: string): Promise<string> {
   const p = limpiar(pregunta);
   const todas = await listarFacturas();
-  if (todas.length === 0) return "Todavía no hay facturas guardadas. Sube un PDF o pulsa "Cargar facturas".";
+  if (todas.length === 0) return "Todavía no hay facturas guardadas. Sube un PDF o carga facturas desde el listado.";
   const per = detectarPeriodo(p);
   const delPeriodo = todas.filter(per.filtro);
 
