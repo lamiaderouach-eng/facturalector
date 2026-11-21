@@ -86,7 +86,7 @@ export default function Panel() {
           <p>Todavía no hay facturas.</p>
           <div className="botones">
             <a className="boton" href="#/subir">Subir un PDF</a>
-            <button className="boton secundario" onClick={ejemplos}>Cargar facturas</button>
+            <button className="boton secundario" onClick={ejemplos}>Añadir facturas</button>
           </div>
         </div>
       ) : (
