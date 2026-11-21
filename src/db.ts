@@ -1,26 +1,28 @@
-﻿// Base de datos local del navegador (IndexedDB con Dexie).
+// Base de datos compartida en la nube (Supabase, PostgreSQL).
 // Tablas normalizadas: proveedores, clientes, facturas y lineas.
-import Dexie, { Table } from "dexie";
-import type { Empresa, Factura, FacturaFila, Linea } from "./types";
+// Se usa la API REST de Supabase con fetch, sin librerías extra.
+import { SUPABASE_URL, SUPABASE_CLAVE } from "./config";
+import type { Factura, Linea } from "./types";
 
-class BaseFacturas extends Dexie {
-  proveedores!: Table<Empresa, number>;
-  clientes!: Table<Empresa, number>;
-  facturas!: Table<FacturaFila, number>;
-  lineas!: Table<Linea, number>;
+const BASE = `${SUPABASE_URL}/rest/v1`;
 
-  constructor() {
-    super("facturas-lamia");
-    this.version(1).stores({
-      proveedores: "++id, nombre",
-      clientes: "++id, nombre",
-      facturas: "++id, numero, proveedorId, fechaEmision, fechaRecepcion, estado",
-      lineas: "++id, facturaId",
-    });
-  }
+// Cabeceras que pide Supabase en cada petición
+const cabeceras = {
+  apikey: SUPABASE_CLAVE,
+  Authorization: `Bearer ${SUPABASE_CLAVE}`,
+  "Content-Type": "application/json",
+};
+
+// Hace una petición y devuelve el JSON (o null si no hay respuesta)
+async function pedir<T = unknown>(ruta: string, opciones: RequestInit = {}): Promise<T> {
+  const resp = await fetch(`${BASE}/${ruta}`, {
+    ...opciones,
+    headers: { ...cabeceras, ...(opciones.headers as Record<string, string> | undefined) },
+  });
+  if (!resp.ok) throw new Error(`Error de la base de datos (${resp.status}): ${await resp.text()}`);
+  const texto = await resp.text();
+  return (texto ? JSON.parse(texto) : null) as T;
 }
-
-export const db = new BaseFacturas();
 
 // Hoy en formato AAAA-MM-DD (hora local)
 export function hoy(): string {
@@ -31,86 +33,159 @@ export function hoy(): string {
 }
 
 // Busca una empresa por nombre en la tabla; si no existe, la crea
-async function buscarOCrear(tabla: Table<Empresa, number>, nombre: string, nif: string): Promise<number> {
+async function buscarOCrear(tabla: "proveedores" | "clientes", nombre: string, nif: string): Promise<number> {
   const limpio = nombre.trim();
-  const existente = await tabla.where("nombre").equalsIgnoreCase(limpio).first();
-  if (existente?.id !== undefined) {
-    if (nif && existente.nif !== nif) await tabla.update(existente.id, { nif });
-    return existente.id;
+  // Se escapan % y _ para que ilike compare el texto tal cual
+  const patron = limpio.replace(/[\\%_]/g, (c) => `\\${c}`);
+  const encontrados = await pedir<{ id: number; nif: string | null }[]>(
+    `${tabla}?select=id,nif&nombre=ilike.${encodeURIComponent(patron)}&limit=1`,
+  );
+  if (encontrados.length > 0) {
+    const ex = encontrados[0];
+    if (nif && ex.nif !== nif) {
+      await pedir(`${tabla}?id=eq.${ex.id}`, { method: "PATCH", body: JSON.stringify({ nif }) });
+    }
+    return ex.id;
   }
-  return (await tabla.add({ nombre: limpio, nif })) as number;
+  const nuevo = await pedir<{ id: number }[]>(tabla, {
+    method: "POST",
+    headers: { Prefer: "return=representation" },
+    body: JSON.stringify({ nombre: limpio, nif }),
+  });
+  return nuevo[0].id;
 }
 
 // Guarda una factura nueva (o actualiza si trae id)
 export async function guardarFactura(f: Factura): Promise<number> {
-  return db.transaction("rw", db.proveedores, db.clientes, db.facturas, db.lineas, async () => {
-    const proveedorId = await buscarOCrear(db.proveedores, f.proveedor || "Proveedor desconocido", f.proveedorNif);
-    const clienteId = f.cliente.trim() ? await buscarOCrear(db.clientes, f.cliente, f.clienteNif) : null;
-    const fila: FacturaFila = {
-      numero: f.numero,
-      proveedorId,
-      clienteId,
-      fechaEmision: f.fechaEmision,
-      fechaVencimiento: f.fechaVencimiento,
-      baseImponible: f.baseImponible,
-      impuestos: f.impuestos,
-      total: f.total,
-      estado: f.estado,
-      archivo: f.archivo,
-      remitente: f.remitente,
-      fechaRecepcion: f.fechaRecepcion,
-    };
-    let id: number;
-    if (f.id !== undefined) {
-      id = f.id;
-      await db.facturas.update(id, { ...fila });
-      await db.lineas.where("facturaId").equals(id).delete();
-    } else {
-      id = (await db.facturas.add(fila)) as number;
-    }
-    await db.lineas.bulkAdd(f.lineas.map(({ id: _quitar, ...l }) => ({ ...l, facturaId: id })));
-    return id;
-  });
+  const proveedorId = await buscarOCrear("proveedores", f.proveedor || "Proveedor desconocido", f.proveedorNif);
+  const clienteId = f.cliente.trim() ? await buscarOCrear("clientes", f.cliente, f.clienteNif) : null;
+  // Las fechas vacías se guardan como null
+  const fila = {
+    numero: f.numero,
+    proveedor_id: proveedorId,
+    cliente_id: clienteId,
+    fecha_emision: f.fechaEmision || null,
+    fecha_vencimiento: f.fechaVencimiento || null,
+    base_imponible: f.baseImponible,
+    impuestos: f.impuestos,
+    total: f.total,
+    estado: f.estado,
+    archivo: f.archivo,
+    remitente: f.remitente,
+    fecha_recepcion: f.fechaRecepcion || hoy(),
+  };
+  let id: number;
+  if (f.id !== undefined) {
+    id = f.id;
+    await pedir(`facturas?id=eq.${id}`, { method: "PATCH", body: JSON.stringify(fila) });
+    await pedir(`lineas?factura_id=eq.${id}`, { method: "DELETE" });
+  } else {
+    const nueva = await pedir<{ id: number }[]>("facturas", {
+      method: "POST",
+      headers: { Prefer: "return=representation" },
+      body: JSON.stringify(fila),
+    });
+    id = nueva[0].id;
+  }
+  if (f.lineas.length > 0) {
+    await pedir("lineas", {
+      method: "POST",
+      body: JSON.stringify(
+        f.lineas.map((l) => ({
+          factura_id: id,
+          concepto: l.concepto,
+          cantidad: l.cantidad,
+          precio_unitario: l.precioUnitario,
+          descuento: l.descuento,
+          importe: l.importe,
+        })),
+      ),
+    });
+  }
+  return id;
 }
 
-// Une una fila de factura con su proveedor, cliente y líneas
-async function unir(fila: FacturaFila): Promise<Factura> {
-  const prov = await db.proveedores.get(fila.proveedorId);
-  const cli = fila.clienteId ? await db.clientes.get(fila.clienteId) : undefined;
-  const lineas = await db.lineas.where("facturaId").equals(fila.id!).toArray();
+// Forma de una factura tal como la devuelve Supabase (con proveedor, cliente y líneas unidos)
+interface FilaNube {
+  id: number;
+  numero: string;
+  fecha_emision: string | null;
+  fecha_vencimiento: string | null;
+  base_imponible: number;
+  impuestos: number;
+  total: number;
+  estado: "pendiente" | "validada";
+  archivo: string | null;
+  remitente: string | null;
+  fecha_recepcion: string;
+  proveedores: { nombre: string; nif: string | null } | null;
+  clientes: { nombre: string; nif: string | null } | null;
+  lineas: {
+    id: number;
+    factura_id: number;
+    concepto: string;
+    cantidad: number;
+    precio_unitario: number;
+    descuento: number;
+    importe: number;
+  }[];
+}
+
+// Pasa una fila de la nube al formato que usa la interfaz
+function aFactura(r: FilaNube): Factura {
+  const lineas: Linea[] = [...r.lineas]
+    .sort((a, b) => a.id - b.id)
+    .map((l) => ({
+      id: l.id,
+      facturaId: l.factura_id,
+      concepto: l.concepto,
+      cantidad: Number(l.cantidad),
+      precioUnitario: Number(l.precio_unitario),
+      descuento: Number(l.descuento),
+      importe: Number(l.importe),
+    }));
   return {
-    id: fila.id,
-    numero: fila.numero,
-    proveedor: prov?.nombre ?? "",
-    proveedorNif: prov?.nif ?? "",
-    cliente: cli?.nombre ?? "",
-    clienteNif: cli?.nif ?? "",
-    fechaEmision: fila.fechaEmision,
-    fechaVencimiento: fila.fechaVencimiento,
-    baseImponible: fila.baseImponible,
-    impuestos: fila.impuestos,
-    total: fila.total,
-    estado: fila.estado,
-    archivo: fila.archivo,
-    remitente: fila.remitente,
-    fechaRecepcion: fila.fechaRecepcion,
+    id: r.id,
+    numero: r.numero,
+    proveedor: r.proveedores?.nombre ?? "",
+    proveedorNif: r.proveedores?.nif ?? "",
+    cliente: r.clientes?.nombre ?? "",
+    clienteNif: r.clientes?.nif ?? "",
+    fechaEmision: r.fecha_emision ?? "",
+    fechaVencimiento: r.fecha_vencimiento ?? "",
+    baseImponible: Number(r.base_imponible),
+    impuestos: Number(r.impuestos),
+    total: Number(r.total),
+    estado: r.estado,
+    archivo: r.archivo ?? "",
+    remitente: r.remitente ?? "",
+    fechaRecepcion: r.fecha_recepcion,
     lineas,
   };
 }
 
+// Una sola petición trae la factura con su proveedor, cliente y líneas
+const UNIR = "select=*,proveedores(nombre,nif),clientes(nombre,nif),lineas(*)";
+
 export async function listarFacturas(): Promise<Factura[]> {
-  const filas = await db.facturas.orderBy("fechaRecepcion").reverse().toArray();
-  return Promise.all(filas.map(unir));
+  const filas = await pedir<FilaNube[]>(`facturas?${UNIR}&order=fecha_recepcion.desc,id.desc`);
+  return filas.map(aFactura);
 }
 
 export async function obtenerFactura(id: number): Promise<Factura | undefined> {
-  const fila = await db.facturas.get(id);
-  return fila ? unir(fila) : undefined;
+  const filas = await pedir<FilaNube[]>(`facturas?${UNIR}&id=eq.${id}`);
+  return filas.length > 0 ? aFactura(filas[0]) : undefined;
 }
 
 export async function borrarFactura(id: number): Promise<void> {
-  await db.transaction("rw", db.facturas, db.lineas, async () => {
-    await db.lineas.where("facturaId").equals(id).delete();
-    await db.facturas.delete(id);
-  });
+  // Las líneas se borran solas (ON DELETE CASCADE)
+  await pedir(`facturas?id=eq.${id}`, { method: "DELETE" });
+}
+
+// Borra todo el contenido de las cuatro tablas (primero las que dependen de otras)
+export async function vaciarBase(): Promise<void> {
+  await pedir("lineas?id=gt.0", { method: "DELETE" });
+  await pedir("facturas?id=gt.0", { method: "DELETE" });
+  await pedir("proveedores?id=gt.0", { method: "DELETE" });
+  await pedir("clientes?id=gt.0", { method: "DELETE" });
 }

@@ -1,6 +1,6 @@
 ﻿// Facturas de ejemplo para enseñar la aplicación sin conectar el correo.
 // Usa los PDF de /public/muestras y los pasa por el mismo lector real.
-import { guardarFactura, hoy, db } from "./db";
+import { guardarFactura, hoy, vaciarBase } from "./db";
 import { procesarPdf } from "./parser";
 import type { Factura } from "./types";
 
@@ -44,9 +44,7 @@ export async function cargarEjemplos(): Promise<number> {
 }
 
 export async function vaciarTodo() {
-  await db.transaction("rw", db.proveedores, db.clientes, db.facturas, db.lineas, async () => {
-    await Promise.all([db.proveedores.clear(), db.clientes.clear(), db.facturas.clear(), db.lineas.clear()]);
-  });
+  await vaciarBase();
 }
 
 export { hoy };
