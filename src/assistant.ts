@@ -1,4 +1,4 @@
-// Asistente de consulta: entiende preguntas en lenguaje natural (texto o voz)
+﻿// Asistente de consulta: entiende preguntas en lenguaje natural (texto o voz)
 // y responde SIEMPRE con los datos guardados en la base de datos.
 // No usa IA generativa: detecta la intención con palabras clave (y sus sinónimos),
 // calcula los importes con las facturas reales y, si no entiende, propone ejemplos.
@@ -58,7 +58,7 @@ function leerImporte(p: string): number | null {
 export async function responder(pregunta: string): Promise<string> {
   const p = limpiar(pregunta);
   const todas = await listarFacturas();
-  if (todas.length === 0) return "Todavía no hay facturas guardadas. Sube un PDF o carga las de ejemplo.";
+  if (todas.length === 0) return "Todavía no hay facturas guardadas. Sube un PDF para empezar.";
   const per = detectarPeriodo(p);
   const delPeriodo = todas.filter(per.filtro);
 

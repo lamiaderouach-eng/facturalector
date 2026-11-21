@@ -1,7 +1,7 @@
 ﻿// Página principal: listado de facturas procesadas
 import { useEffect, useMemo, useState } from "react";
 import { listarFacturas } from "../db";
-import { cargarEjemplos, vaciarTodo } from "../demo";
+import { vaciarTodo } from "../demo";
 import { euros } from "../assistant";
 import type { Factura } from "../types";
 
@@ -32,10 +32,6 @@ export default function Panel() {
   const total = facturas.reduce((s, f) => s + f.total, 0);
   const pendientes = facturas.filter((f) => f.estado === "pendiente").length;
 
-  const ejemplos = async () => {
-    await cargarEjemplos();
-    recargar();
-  };
   const vaciar = async () => {
     // Es una base compartida: para borrar todo hay que escribir una palabra, no basta con aceptar
     const palabra = prompt(`Se borrarán las ${facturas.length} facturas de la base compartida. No se puede deshacer.\nPara confirmar escribe BORRAR:`);
@@ -86,7 +82,6 @@ export default function Panel() {
           <p>Todavía no hay facturas.</p>
           <div className="botones">
             <a className="boton" href="#/subir">Subir un PDF</a>
-            <button className="boton secundario" onClick={ejemplos}>Cargar facturas de ejemplo</button>
           </div>
         </div>
       ) : (
@@ -120,7 +115,6 @@ export default function Panel() {
             </table>
           </div>
           <div className="botones">
-            <button className="boton secundario" onClick={ejemplos}>Añadir facturas de ejemplo</button>
             <button className="boton peligro" onClick={vaciar}>Borrar todas las facturas</button>
           </div>
         </>
