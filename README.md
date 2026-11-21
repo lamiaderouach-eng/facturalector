@@ -17,7 +17,7 @@ npm run dev        # desarrollo
 npm run build      # versión final en /dist
 npm run muestras   # crea PDFs de ejemplo en /muestras
 ```
-En "Subir PDF" puedes usar los PDF de la carpeta `muestras`.
+En el listado pulsa "Cargar facturas".
 
 ## Base de datos (Supabase)
 1. Crea un proyecto en Supabase.
